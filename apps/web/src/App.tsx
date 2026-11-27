@@ -11,6 +11,7 @@ import { ImportPage } from "./pages/ImportPage";
 import { StudyPage } from "./pages/StudyPage";
 import { StatisticsPage } from "./pages/StatisticsPage";
 import { AssessmentsPage } from "./pages/AssessmentsPage";
+import { ProfilePage } from "./pages/ProfilePage";
 
 export function App() {
   const [user, setUser] = useState<PublicUser | null>(null);
@@ -37,6 +38,7 @@ export function App() {
   return <Routes>
     <Route path="/login" element={user ? <Navigate to="/" replace /> : <AuthPage onAuthenticated={setUser} />} />
     <Route path="/" element={user ? <HomePage user={user} onLogout={() => { localStorage.removeItem("recallio:offline-user"); setUser(null); }} /> : <Navigate to="/login" replace />} />
+    <Route path="/profile" element={user ? <ProfilePage user={user} onUserUpdated={setUser} onLogout={() => { localStorage.removeItem("recallio:offline-user"); setUser(null); }} /> : <Navigate to="/login" replace />} />
     <Route path="/decks" element={user ? <DecksPage user={user} /> : <Navigate to="/login" replace />} />
     <Route path="/add" element={user ? <CardEditorPage user={user} /> : <Navigate to="/login" replace />} />
     <Route path="/browse" element={user ? <BrowsePage user={user} /> : <Navigate to="/login" replace />} />

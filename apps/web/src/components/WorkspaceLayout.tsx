@@ -1,4 +1,4 @@
-import { BookOpen, ChevronDown, CircleHelp, ClipboardCheck, House, Sparkles } from "lucide-react";
+import { BookOpen, ChevronDown, CircleHelp, ClipboardCheck, House, Sparkles, UserRound } from "lucide-react";
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
@@ -23,9 +23,9 @@ export function WorkspaceLayout({ user, title, children }: { user: PublicUser; t
       </nav>
       <div className="sidebar-spacer" />
       <div className="help-link"><CircleHelp size={17} />Help & guidance</div>
-      <div className="sidebar-footer"><span className="avatar">{user.name.charAt(0).toUpperCase()}</span><span className="user-meta"><strong>{user.name}</strong><small>{user.email}</small></span><button className="icon-button" aria-label="Account menu" onClick={() => setMenuOpen(!menuOpen)}><ChevronDown size={16} /></button>{menuOpen && <div className="account-menu"><button onClick={logout}>Sign out</button></div>}</div>
+      <div className="sidebar-footer"><span className="avatar">{user.name.charAt(0).toUpperCase()}</span><span className="user-meta"><strong>{user.name}</strong><small>{user.email}</small></span><button className="icon-button" aria-label="Account menu" onClick={() => setMenuOpen(!menuOpen)}><ChevronDown size={16} /></button>{menuOpen && <div className="account-menu"><Link to="/profile" onClick={() => setMenuOpen(false)}>Profile</Link><button onClick={logout}>Sign out</button></div>}</div>
     </aside>
-    <section className="workspace"><header className="topbar"><div className="breadcrumb"><Link to="/">Your space</Link><span>/</span>{title}</div><div className="top-actions"><SyncStatus userId={user.id} /></div></header><div className="page-content">{children}</div></section>
+    <section className="workspace"><header className="topbar"><div className="breadcrumb"><Link to="/">Your space</Link><span>/</span>{title}</div><div className="top-actions"><SyncStatus userId={user.id} /><Link className="profile-top-action" to="/profile" aria-label="Open profile"><span className="avatar avatar-small">{user.name.charAt(0).toUpperCase()}</span><UserRound size={15} /><span>Profile</span></Link></div></header><div className="page-content">{children}</div></section>
     <nav className="mobile-nav" aria-label="Main navigation"><Link to="/" className={title === "Home" ? "mobile-selected" : ""}><House size={18} />Home</Link><Link to="/decks" className={title === "Decks" ? "mobile-selected" : ""}><BookOpen size={18} />Decks</Link><Link to="/assessments" className={title === "Assessments" || title === "Assessment" ? "mobile-selected" : ""}><ClipboardCheck size={18} />Tests</Link><Link to="/statistics" className={title === "Statistics" ? "mobile-selected" : ""}><Sparkles size={18} />Stats</Link></nav>
   </main>;
 }

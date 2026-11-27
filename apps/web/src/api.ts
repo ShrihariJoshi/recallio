@@ -41,7 +41,11 @@ export const authApi = {
   me: () => request<{ user: PublicUser }>("/auth/me"),
   login: (input: LoginInput) => request<{ user: PublicUser }>("/auth/login", { method: "POST", body: JSON.stringify(input) }),
   register: (input: RegisterInput) => request<{ user: PublicUser }>("/auth/register", { method: "POST", body: JSON.stringify(input) }),
-  logout: () => request<void>("/auth/logout", { method: "POST" }),
+  updateProfile: (input: { name: string; email: string }) => request<{ user: PublicUser }>("/auth/profile", { method: "PATCH", body: JSON.stringify(input) }),
+  logout: async () => {
+    try { await request<void>("/auth/logout", { method: "POST" }); }
+    finally { csrfToken = undefined; }
+  },
 };
 
 export const learningApi = {

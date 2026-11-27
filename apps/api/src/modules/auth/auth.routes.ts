@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { Router, type Response } from "express";
 import jwt from "jsonwebtoken";
-import { loginSchema, registerSchema } from "@recallio/contracts";
+import { loginSchema, profileUpdateSchema, registerSchema } from "@recallio/contracts";
 import { env, isProduction } from "../../config/env.js";
 import { authenticate, type AuthenticatedRequest } from "../../middleware/authenticate.js";
 import { asyncHandler } from "../../shared/async-handler.js";
@@ -48,7 +48,7 @@ authRouter.post("/register", asyncHandler(async (req, res) => {
 authRouter.post("/login", asyncHandler(async (req, res) => {
   const input = loginSchema.parse(req.body);
   const user = await User.findOne({ email: input.email }).select("+passwordHash");
-  const valid = user ? await bcrypt.compare(input.password, user.passwordHash) : false;
+  const valid = user?.passwordHash ? await bcrypt.compare(input.password, user.passwordHash) : false;
   if (!user || !valid) throw new AppError(401, "INVALID_CREDENTIALS", "Email or password is incorrect.");
   issueSession(res, user._id.toString());
   res.json({ success: true, data: { user: publicUser(user) }, message: "Welcome back." });
@@ -64,4 +64,18 @@ authRouter.get("/me", authenticate, asyncHandler(async (req: AuthenticatedReques
   const user = await User.findById(req.userId);
   if (!user) throw new AppError(401, "UNAUTHENTICATED", "Please sign in to continue.");
   res.json({ success: true, data: { user: publicUser(user) } });
+}));
+
+authRouter.patch("/profile", authenticate, asyncHandler(async (req: AuthenticatedRequest, res) => {
+  const input = profileUpdateSchema.parse(req.body);
+  try {
+    const user = await User.findByIdAndUpdate(req.userId, { $set: input }, { new: true, runValidators: true });
+    if (!user) throw new AppError(401, "UNAUTHENTICATED", "Please sign in to continue.");
+    res.json({ success: true, data: { user: publicUser(user) }, message: "Your profile has been updated." });
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === 11000) {
+      throw new AppError(409, "EMAIL_IN_USE", "An account with this email already exists.");
+    }
+    throw error;
+  }
 }));

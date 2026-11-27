@@ -8,11 +8,11 @@ declare global {
 }
 export type AuthenticatedRequest = Request;
 
-export function authenticate(req: AuthenticatedRequest, _res: Response, next: NextFunction): void {
+export async function authenticate(req: AuthenticatedRequest, _res: Response, next: NextFunction): Promise<void> {
   const token = req.cookies?.recallio_session;
   if (!token) return next(new AppError(401, "UNAUTHENTICATED", "Please sign in to continue."));
   try {
-    const payload = jwt.verify(token, env.JWT_SECRET);
+    const payload = jwt.verify(token, env.JWT_SECRET, { issuer: "recallio", algorithms: ["HS256"] });
     if (typeof payload === "string" || typeof payload.sub !== "string") throw new Error("Invalid session");
     req.userId = payload.sub;
     next();

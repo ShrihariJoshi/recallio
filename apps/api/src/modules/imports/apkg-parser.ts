@@ -3,9 +3,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { createRequire } from "node:module";
 import initSqlJs, { type Database as SqlDatabase } from "sql.js";
-import { decompress as zstdDecompress } from "fzstd";
 import sanitizeHtml from "sanitize-html";
 import yauzl from "yauzl";
+import { decompressZstdLimited, ZstdFormatError, ZstdLimitError } from "./safe-zstd.js";
 
 const MAX_ENTRIES = 10_000;
 const MAX_UNCOMPRESSED = 150 * 1024 * 1024;
@@ -15,8 +15,27 @@ const MAX_NOTES = 20_000;
 const MAX_CARDS = 50_000;
 const require = createRequire(import.meta.url);
 
+function decompressPackageData(buffer: Buffer, maxBytes: number): Buffer {
+  try { return decompressZstdLimited(buffer, maxBytes); }
+  catch (error) {
+    if (error instanceof ZstdLimitError) throw new ImportFormatError("Compressed package data exceeds safe size limits.", "PACKAGE_LIMIT");
+    if (error instanceof ZstdFormatError) throw new ImportFormatError("Compressed package data is invalid.");
+    throw error;
+  }
+}
+
 export class ImportFormatError extends Error {
   constructor(message: string, public code = "UNSUPPORTED_PACKAGE") { super(message); }
+}
+
+export function claimArchiveEntryName(rawName: string, seenNames: Set<string>): string {
+  const name = rawName.replaceAll("\\", "/");
+  if (!name || name.startsWith("/") || name.split("/").some((part) => part === "..") || name.includes(":") || name.includes("\0")) {
+    throw new ImportFormatError("The package contains an unsafe file path.");
+  }
+  if (seenNames.has(name)) throw new ImportFormatError("The package contains duplicate archive entries.", "DUPLICATE_ARCHIVE_ENTRY");
+  seenNames.add(name);
+  return name;
 }
 
 export interface ParsedApkg {
@@ -34,6 +53,7 @@ function readZip(filePath: string): Promise<Map<string, Buffer>> {
     yauzl.open(filePath, { lazyEntries: true, autoClose: true, validateEntrySizes: true, decodeStrings: true }, (error, zip) => {
       if (error || !zip) return reject(new ImportFormatError("This file is not a valid APKG archive."));
       const entries = new Map<string, Buffer>();
+      const seenNames = new Set<string>();
       let entryCount = 0;
       let expandedBytes = 0;
       const fail = (reason: Error) => { zip.close(); reject(reason); };
@@ -42,10 +62,9 @@ function readZip(filePath: string): Promise<Map<string, Buffer>> {
         entryCount += 1;
         expandedBytes += entry.uncompressedSize;
         if (entryCount > MAX_ENTRIES || expandedBytes > MAX_UNCOMPRESSED) return fail(new ImportFormatError("The package exceeds safe extraction limits.", "PACKAGE_LIMIT"));
-        const name = entry.fileName.replaceAll("\\", "/");
-        if (name.startsWith("/") || name.split("/").some((part: string) => part === "..") || name.includes(":") || name.includes("\0")) {
-          return fail(new ImportFormatError("The package contains an unsafe file path."));
-        }
+        let name: string;
+        try { name = claimArchiveEntryName(entry.fileName, seenNames); }
+        catch (entryError) { return fail(entryError as Error); }
         if (entry.fileName.endsWith("/")) return zip.readEntry();
         zip.openReadStream(entry, (streamError, stream) => {
           if (streamError || !stream) return fail(new ImportFormatError("A package entry could not be read."));
@@ -86,7 +105,7 @@ function protoFields(buffer: Buffer): Array<{ number: number; wire: number; valu
 }
 
 function parseMediaEntries(buffer: Buffer, modern: boolean): string[] {
-  const data = modern ? Buffer.from(zstdDecompress(buffer)) : buffer;
+  const data = modern ? decompressPackageData(buffer, MAX_UNCOMPRESSED) : buffer;
   if (!modern) {
     try { const mapping = JSON.parse(data.toString("utf8")) as Record<string, string>; return Object.values(mapping); }
     catch { throw new ImportFormatError("The package media map is invalid."); }
@@ -115,6 +134,15 @@ function noteTypeFor(model: Record<string, any>): "basic" | "basic_reversed" | "
 }
 
 function splitFields(value: unknown): string[] { return typeof value === "string" ? value.split("\u001f") : []; }
+
+export function indexFirstCardByNote<T extends { nid: unknown }>(cards: T[]): Map<string, T> {
+  const firstByNote = new Map<string, T>();
+  for (const card of cards) {
+    const noteId = String(card.nid);
+    if (!firstByNote.has(noteId)) firstByNote.set(noteId, card);
+  }
+  return firstByNote;
+}
 
 function supportedImageType(buffer: Buffer): string | null {
   if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "image/jpeg";
@@ -189,7 +217,7 @@ export async function parseApkg(filePath: string): Promise<ParsedApkg> {
   const collectionName = modern ? "collection.anki21b" : entries.has("collection.anki21") ? "collection.anki21" : "collection.anki2";
   const packedDb = entries.get(collectionName);
   if (!packedDb) throw new ImportFormatError("No Anki collection database was found in this package.");
-  const database = modern ? Buffer.from(zstdDecompress(packedDb)) : packedDb;
+  const database = modern ? decompressPackageData(packedDb, MAX_DATABASE) : packedDb;
   if (database.length > MAX_DATABASE) throw new ImportFormatError("The collection database exceeds the safe size limit.", "PACKAGE_LIMIT");
   const SQL = await initSqlJs({ locateFile: (file) => path.join(path.dirname(require.resolve("sql.js")), file) });
   const db = new SQL.Database(database);
@@ -209,6 +237,7 @@ export async function parseApkg(filePath: string): Promise<ParsedApkg> {
     const noteRows = query<{ id: unknown; guid: unknown; mid: unknown; flds: unknown; tags: unknown }>(db, "SELECT id, guid, mid, flds, tags FROM notes LIMIT 20001");
     const cardRows = query<{ id: unknown; nid: unknown; did: unknown; ord: unknown; type: unknown; queue: unknown }>(db, "SELECT id, nid, did, ord, type, queue FROM cards LIMIT 50001");
     if (noteRows.length > MAX_NOTES || cardRows.length > MAX_CARDS) throw new ImportFormatError("This package has more notes or cards than the current import limit.", "PACKAGE_LIMIT");
+    const firstCardByNote = indexFirstCardByNote(cardRows);
     const notes = noteRows.map((row) => {
       const modelId = String(row.mid); const model = rawModels[modelId] as Record<string, any> | undefined;
       const fields = splitFields(row.flds); const noteType = model ? noteTypeFor(model) : "basic";
@@ -217,7 +246,7 @@ export async function parseApkg(filePath: string): Promise<ParsedApkg> {
       const frontIndex = Math.max(0, fieldNames.findIndex((name: string) => ["front", "text", "question"].includes(name)));
       const backIndex = Math.max(0, fieldNames.findIndex((name: string) => ["back", "extra", "answer"].includes(name) && name !== fieldNames[frontIndex]));
       const extraIndex = fieldNames.findIndex((name: string) => name === "extra" && backIndex !== fieldNames.indexOf(name));
-      const did = cardRows.find((card) => String(card.nid) === String(row.id));
+      const did = firstCardByNote.get(String(row.id));
       const rawTags = typeof row.tags === "string" ? row.tags.trim().split(/\s+/).filter(Boolean) : [];
       return {
         ankiId: String(row.id), guid: String(row.guid), deckId: String(did?.did ?? Object.keys(rawDecks)[0] ?? "1"), noteType,
@@ -236,8 +265,11 @@ export async function parseApkg(filePath: string): Promise<ParsedApkg> {
     const mediaEntries = entries.get("media");
     const mediaNames = mediaEntries ? parseMediaEntries(mediaEntries, modern) : [];
     let mediaBytes = 0;
-    for (const [name, body] of entries) if (/^\d+$/.test(name)) mediaBytes += modern ? zstdDecompress(body).byteLength : body.byteLength;
-    if (mediaBytes > MAX_MEDIA_TOTAL) throw new ImportFormatError("Media in this package exceeds the safe import limit.", "PACKAGE_LIMIT");
+    for (const [name, body] of entries) if (/^\d+$/.test(name)) {
+      const remainingBytes = MAX_MEDIA_TOTAL - mediaBytes;
+      mediaBytes += modern ? decompressPackageData(body, remainingBytes).byteLength : body.byteLength;
+      if (mediaBytes > MAX_MEDIA_TOTAL) throw new ImportFormatError("Media in this package exceeds the safe import limit.", "PACKAGE_LIMIT");
+    }
     const existingMedia = new Set(mediaNames);
     const missingMedia = [...referenced].filter((name) => {
       if (!name || existingMedia.has(name)) return false;
@@ -249,7 +281,7 @@ export async function parseApkg(filePath: string): Promise<ParsedApkg> {
       if (!referenced.has(name) && !referenced.has(decodedName)) return [];
       const packed = entries.get(String(index));
       if (!packed) return [];
-      const buffer = modern ? Buffer.from(zstdDecompress(packed)) : packed;
+      const buffer = modern ? decompressPackageData(packed, MAX_MEDIA_TOTAL) : packed;
       const mimeType = supportedImageType(buffer);
       if (!mimeType) return [];
       if (mimeType === "image/svg+xml") {

@@ -1,4 +1,4 @@
-import { Types } from "mongoose";
+import { Types, type ClientSession } from "mongoose";
 import { createNewFsrsCard, type FsrsCard } from "@recallio/scheduler";
 import { Card } from "../cards/card.model.js";
 import { User } from "../auth/user.model.js";
@@ -6,7 +6,7 @@ import { AppError } from "../../shared/errors.js";
 import { CardState } from "./review.model.js";
 import { schedulerStateFields } from "./review-metrics.js";
 
-async function bulkInitialize(userId: string, cards: Array<{ _id: Types.ObjectId; dueAt?: Date }>): Promise<void> {
+async function bulkInitialize(userId: string, cards: Array<{ _id: Types.ObjectId; dueAt?: Date }>, session?: ClientSession): Promise<void> {
   if (!cards.length) return;
   const operations = await Promise.all(cards.map(async (card) => {
     const schedulerCard = await createNewFsrsCard(card.dueAt ?? new Date());
@@ -18,20 +18,20 @@ async function bulkInitialize(userId: string, cards: Array<{ _id: Types.ObjectId
     } }, upsert: true } };
   }));
   try {
-    await CardState.bulkWrite(operations, { ordered: false });
+    await CardState.bulkWrite(operations, { ordered: false, ...(session ? { session } : {}) });
   } catch (error) {
     const writeErrors = (error as { writeErrors?: Array<{ code?: number }> }).writeErrors;
     const isConcurrentInitialization = (error as { code?: number }).code === 11000 || Boolean(writeErrors?.length && writeErrors.every((item) => item.code === 11000));
-    if (!isConcurrentInitialization) throw error;
+    if (session || !isConcurrentInitialization) throw error;
   }
 }
 
-export async function initializeCardStatesForCards(userId: string, cardIds: Types.ObjectId[]): Promise<void> {
+export async function initializeCardStatesForCards(userId: string, cardIds: Types.ObjectId[], session?: ClientSession): Promise<void> {
   if (!cardIds.length) return;
-  const cards = await Card.find({ userId, _id: { $in: cardIds } }).select("_id dueAt").lean();
-  const existingIds = new Set((await CardState.distinct("cardId", { userId, cardId: { $in: cardIds } })).map(String));
+  const cards = await Card.find({ userId, _id: { $in: cardIds } }).select("_id dueAt").session(session ?? null).lean();
+  const existingIds = new Set((await CardState.distinct("cardId", { userId, cardId: { $in: cardIds } }).session(session ?? null)).map(String));
   const missing = cards.filter((card) => !existingIds.has(String(card._id)));
-  for (let index = 0; index < missing.length; index += 500) await bulkInitialize(userId, missing.slice(index, index + 500));
+  for (let index = 0; index < missing.length; index += 500) await bulkInitialize(userId, missing.slice(index, index + 500), session);
 }
 
 export async function initializeMissingCardStates(userId: string): Promise<void> {
